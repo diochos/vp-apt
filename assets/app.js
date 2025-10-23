@@ -490,7 +490,7 @@ function renderTables(dataset, mostrarCatalogoCompleto=false) {
     s2.appendChild(l2);
     panel.appendChild(s2);
 
-    // 3) Traspaso (muertos)
+    // 3) Traspaso (mudertos)
     const trans = enriched
       .filter(r => (r.inv_total||0) > 0 && (!Number.isFinite(r.venta_prom) || r.venta_prom===0))
       .sort((a,b)=> (b.inv_total||0) - (a.inv_total||0))
