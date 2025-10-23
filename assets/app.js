@@ -1,18 +1,30 @@
 // --- Config ---
 const LS_KEY_DATA = "pt_inv_dataset_v1";
 const LS_KEY_OBS_PREFIX = "pt_obs:"; // obs por código
-const DICC_URL = "assets/diccionario.csv"; // linea;codigo;producto (;)
+const DICC_URL = "assets/diccionario.csv";
 
-// === KPI: Umbrales de DÍAS DE PISO (configurable) ===
-// Definición típica en PT: rojo (<=3), naranja (<=7), amarillo (<=14), verde (>14)
-// === KPI: Umbrales de DÍAS DE PISO ===
-const KPI_DIAS = Object.freeze({
-  rojo:     3,
-  naranja:  7,
-  amarillo: 14
+// === KPI: Umbrales de DÍAS DE PISO (tus nuevos valores) ===
+const KPI_DIAS = Object.freeze({ rojo:1, naranja:3, amarillo:5 }); // verde: >5
+
+// === Parámetros para cálculos adicionales (tus nuevos valores) ===
+const CFG = Object.freeze({
+  targetDOS: 5,     // cobertura objetivo (días)
+  excesoDOS: 10     // exceso si pasa de este umbral
 });
 
-const fmtNum = (x) => (x == null ? "–" : (Number.isInteger(x) ? x.toString() : x.toFixed(2)));
+const fmtNum = (x) =>
+  (x == null || Number.isNaN(x)) ? "–" :
+  (Math.abs(x) >= 1000 || !Number.isInteger(x) ? Number(x).toFixed(2) : String(x));
+
+const today = new Date();
+const fmtDate = (d) => !d ? "–" :
+  d.toLocaleDateString("es-MX", { day:"2-digit", month:"short", year:"numeric" }).replace(".", "");
+
+function fechaQuiebre(dias) {
+  if (!Number.isFinite(dias)) return null;
+  const dd = new Date(today); dd.setDate(dd.getDate() + Math.ceil(dias));
+  return dd;
+}
 
 function chipDias(val) {
   if (val == null || !Number.isFinite(val)) return `<span class="kpi na">–</span>`;
@@ -22,42 +34,34 @@ function chipDias(val) {
   return `<span class="kpi ok">${fmtNum(val)}</span>`;
 }
 
-
-// --- Carga dinámica de XLSX (lazy) con fallbacks ---
+// --- Carga dinámica de XLSX ---
 async function ensureXLSX() {
   if (window.XLSX) return;
-  const tryLoad = (src) =>
-    new Promise((res, rej) => {
-      const s = document.createElement("script");
-      s.defer = true; s.src = src;
-      s.onload = () => res(true);
-      s.onerror = () => rej(new Error("fail " + src));
-      document.head.appendChild(s);
-    });
+  const tryLoad = (src) => new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.defer = true; s.src = src;
+    s.onload = () => res(true);
+    s.onerror = () => rej(new Error("fail " + src));
+    document.head.appendChild(s);
+  });
   try {
     await tryLoad("https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js");
   } catch {
-    try {
-      await tryLoad("https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.20.2/xlsx.full.min.js");
-    } catch {
-      // último recurso: archivo local (opcional si lo agregas en tu repo)
-      await tryLoad("./assets/vendor/xlsx.full.min.js");
-    }
+    try { await tryLoad("https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.20.2/xlsx.full.min.js"); }
+    catch { await tryLoad("./assets/vendor/xlsx.full.min.js"); }
   }
 }
 
-// Reemplaza COL_SYNONYMS por esto:
+// --- Aliases de encabezados ---
 const COL_SYNONYMS = {
-  codigo:  ["codigo","código","code","cod","clave","pro"], // ← añade "pro"
+  codigo:  ["codigo","código","code","cod","clave","pro"],
   invtot:  ["invtot","inv. total","inv total","inventario total","total"],
   invlle:  ["invlle","inv lleno","lleno"],
   invvac:  ["invvac","inv vacio","inv vacío","vacio","vacío"],
-  // OJO: quitamos "pro" de venpro para no confundirla con el código
   venpro:  ["venpro","venta prom","venta promedio","ventas prom","ventas promedio","promedio"],
   diatotc: ["diatotc","dias piso","días piso","dias de piso","días de piso","cobertura","dias cobertura"],
+  producto:["producto","descripcion","descripción","nombre","concepto"]
 };
-
-
 const byAlias = (obj) => {
   const map = {};
   for (const [k, v] of Object.entries(obj)) map[String(k).trim().toLowerCase()] = v;
@@ -68,24 +72,19 @@ function pick(row, key) {
   for (const alias of COL_SYNONYMS[key] || []) if (alias in r) return r[alias];
   return undefined;
 }
-
-function escapeRegex(s) {
-  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
+function escapeRegex(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function toNum(v) {
   if (v == null) return NaN;
   const s0 = String(v).trim();
-  const s1 = s0.replace(/[\s,]/g, "");                  // quita separadores de miles (espacio/coma)
-  const s2 = s1.replace(/(\d)\.(?=\d{3}(\D|$))/g, "$1"); // quita puntos de miles tipo 12.345
-  const s  = s2.replace(",", ".");                      // por si quedó decimal con coma
+  const s1 = s0.replace(/[\s,]/g, "");
+  const s2 = s1.replace(/(\d)\.(?=\d{3}(\D|$))/g, "$1");
+  const s  = s2.replace(",", ".");
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : NaN;
 }
 
-// --- Diccionario (linea;codigo;producto) ---
+// --- Diccionario (linea,codigo,producto) ---
 let DICC = { byCode: new Map(), byLinea: new Map() };
-
 async function loadDiccionario() {
   return new Promise((resolve, reject) => {
     Papa.parse(DICC_URL, {
@@ -104,38 +103,34 @@ async function loadDiccionario() {
         for (const [L, arr] of DICC.byLinea.entries()) {
           arr.sort((a,b) => (parseInt(a.codigo)||0) - (parseInt(b.codigo)||0));
         }
-        // badge
         const meta = document.getElementById("fileMeta");
         meta.textContent = `Dicc: ${DICC.byCode.size} entradas`;
         resolve();
       },
       error: (err) => {
-        const meta = document.getElementById("fileMeta");
-        meta.textContent = "⚠ No se pudo cargar el diccionario.csv";
+        document.getElementById("fileMeta").textContent = "⚠ No se pudo cargar el diccionario.csv";
         reject(err);
       }
     });
   });
 }
 
-// --- XLSX → objetos (detecta encabezados aunque haya títulos arriba) ---
+// --- XLSX → objetos ---
 async function parseXlsx(file) {
-  await ensureXLSX(); // <- asegura la librería
+  await ensureXLSX();
   const data = await file.arrayBuffer();
   const wb = XLSX.read(data, { type: "array" });
   const firstSheet = wb.SheetNames[0];
   const sheet = wb.Sheets[firstSheet];
 
-  // Matriz cruda
   const rows2D = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
   const norm = (s) => String(s || "")
-    .toLowerCase()
-    .normalize("NFD").replace(/\p{Diacritic}/gu,"")
+    .toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu,"")
     .replace(/\s+/g," ").trim();
 
   const wants = {
-    codigo:   ["codigo","código","code","cod","clave","pro"],    // ← "pro"
-    producto: ["producto","descripcion","descripción","nombre","concepto"], // ← "concepto"
+    codigo:   ["codigo","código","code","cod","clave","pro"],
+    producto: ["producto","descripcion","descripción","nombre","concepto"],
     invtot:   ["inv. total","inv total","invtot","inventario total","total"],
     venpro:   ["venta prom","venta promedio","venpro","promedio","ventas prom","ventas promedio"],
     diatotc:  ["dias de piso","días de piso","dias piso","cobertura","diatotc"]
@@ -158,9 +153,7 @@ async function parseXlsx(file) {
       break;
     }
   }
-  if (headerRowIdx === -1) {
-    return { rows: [], sheetName: firstSheet, fileName: file.name };
-  }
+  if (headerRowIdx === -1) return { rows: [], sheetName: firstSheet, fileName: file.name };
 
   const dataRows = [];
   for (let r = headerRowIdx + 1; r < rows2D.length; r++) {
@@ -172,51 +165,22 @@ async function parseXlsx(file) {
     if (headerMap.producto !== undefined) obj["producto"]     = row[headerMap.producto] ?? "";
     if (headerMap.invtot   !== undefined) obj["inv. total"]   = row[headerMap.invtot] ?? "";
     if (headerMap.venpro   !== undefined) obj["venta prom"]   = row[headerMap.venpro] ?? "";
-    if (headerMap.diatotc  !== undefined) obj["dias de piso"] = row[headerMap.diatotc] ?? ""; // ← simple y correcto
-    // extra: si existe 'concepto', guárdalo crudo para derivar nombre
-    if (headerMap.producto === undefined && headerMap.producto === undefined && headerMap["producto"] === undefined) {}
-    if (headerMap["producto"] === undefined && headerMap["concepto"] !== undefined) {
-      obj["concepto"] = row[headerMap["concepto"]] ?? "";
-    } else if (headerMap["concepto"] !== undefined) {
-      obj["concepto"] = row[headerMap["concepto"]] ?? "";
-    }
-
+    if (headerMap.diatotc  !== undefined) obj["dias de piso"] = row[headerMap.diatotc] ?? "";
+    if (headerMap["concepto"] !== undefined) obj["concepto"]  = row[headerMap["concepto"]] ?? "";
     dataRows.push(obj);
   }
   return { rows: dataRows, sheetName: firstSheet, fileName: file.name };
 }
 
-// --- Post-proceso / badge ---
-function afterParseAndRender(raw, norm) {
-  const dataset = { meta: { fileName: raw.fileName, sheetName: raw.sheetName }, rows: norm };
-  saveDataset(dataset.meta, dataset.rows);
-  renderTables(dataset, document.getElementById("toggleCatalogo").checked);
-
-  const meta = document.getElementById("fileMeta");
-  const diccCount = DICC.byCode?.size ?? 0;
-  meta.textContent = `Dicc: ${diccCount} entradas | Filas Excel: ${dataset.rows.length}`;
-
-  if (!dataset.rows.length) {
-    alert("No se detectaron filas de datos. Revisa que la hoja tenga una fila de encabezados con 'Código' y 'Producto'.");
-  }
-}
-
-// --- Normalización / derivación ---
-// --- Normalización / derivación: SOLO códigos presentes en el diccionario ---
+// --- Normalización: SOLO códigos presentes en el diccionario ---
 function normalizeRows(rows) {
   const out = [];
   for (const row of rows) {
-    // Código (obligatorio)
     const codigo_raw = pick(row, "codigo");
     if (!codigo_raw) continue;
     const codigo = String(codigo_raw).trim();
+    if (!DICC.byCode.has(codigo)) continue; // filtro duro
 
-    // Si el código NO está en el diccionario, lo ignoramos
-    if (!DICC.byCode.has(codigo)) {
-      continue;
-    }
-
-    // Datos numéricos del Excel (opcionalmente usados)
     const invtot_raw  = pick(row, "invtot");
     const invlle_raw  = pick(row, "invlle");
     const invvac_raw  = pick(row, "invvac");
@@ -231,7 +195,6 @@ function normalizeRows(rows) {
       const suma = (Number.isFinite(invlle) ? invlle : 0) + (Number.isFinite(invvac) ? invvac : 0);
       invtot = Number.isFinite(suma) ? suma : NaN;
     }
-
     let venprom = toNum(venpro_raw);
     if (!Number.isFinite(venprom)) venprom = NaN;
 
@@ -240,13 +203,10 @@ function normalizeRows(rows) {
       dias = invtot / venprom;
     }
 
-    // Línea y nombre SIEMPRE del diccionario
     const { linea, producto } = DICC.byCode.get(codigo);
 
     out.push({
-      linea,
-      codigo,
-      producto,
+      linea, codigo, producto,
       inv_total: Number.isFinite(invtot) ? invtot : null,
       venta_prom: Number.isFinite(venprom) ? venprom : null,
       dias_piso: Number.isFinite(dias) ? dias : null
@@ -261,35 +221,70 @@ function saveDataset(meta, rows) {
 }
 function loadDataset() {
   const raw = localStorage.getItem(LS_KEY_DATA);
-  if (!raw) return null;
-  try { return JSON.parse(raw); } catch { return null; }
+  if (!raw) return null; try { return JSON.parse(raw); } catch { return null; }
 }
 
 // --- Observaciones por código ---
 const getObs = (code) => localStorage.getItem(LS_KEY_OBS_PREFIX + code) || "";
 const setObs = (code, val) => localStorage.setItem(LS_KEY_OBS_PREFIX + code, val);
 
-// --- Helpers de UI ---
-
-
-function chipDias(val) {
-  if (val == null || !Number.isFinite(val)) return `<span class="kpi na">–</span>`;
-  if (val <= KPI_DIAS.rojo)     return `<span class="kpi bad">${fmtNum(val)}</span>`;     // rojo
-  if (val <= KPI_DIAS.naranja)  return `<span class="kpi warn">${fmtNum(val)}</span>`;    // naranja
-  if (val <= KPI_DIAS.amarillo) return `<span class="kpi mid">${fmtNum(val)}</span>`;     // amarillo
-  return `<span class="kpi ok">${fmtNum(val)}</span>`;                                     // verde
-}
-
+// --- Helpers KPIs / Acción Hoy ---
 const sum = (arr, k) => arr.reduce((a,b)=> a + (Number.isFinite(b[k]) ? b[k] : 0), 0);
 const avg = (arr, k) => {
   const vals = arr.map(r => r[k]).filter(Number.isFinite);
   return vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : null;
 };
+function qtyReorden(inv, ven, targetDOS=CFG.targetDOS){
+  if(!Number.isFinite(ven) || ven<=0) return 0;
+  const need = targetDOS*ven - (inv||0);
+  return Math.max(0, Math.round(need));
+}
+function kpiBuckets(d) {
+  let rojo=0,naranja=0,amarillo=0,verde=0;
+  for (const r of d) {
+    const v = r.dias_piso;
+    if (!Number.isFinite(v)) continue;
+    if (v<=KPI_DIAS.rojo) rojo++;
+    else if (v<=KPI_DIAS.naranja) naranja++;
+    else if (v<=KPI_DIAS.amarillo) amarillo++;
+    else verde++;
+  }
+  return {rojo,naranja,amarillo,verde};
+}
 
-// --- Render ---
+// --- Render KPIs globales ---
+function renderKPIs(rows) {
+  const host = document.getElementById("kpis");
+  if (!rows || !rows.length) { host.style.display = "none"; host.innerHTML = ""; return; }
+
+  const activos = rows.filter(r => Number.isFinite(r.venta_prom) && r.venta_prom>0).length;
+  const muertos = rows.filter(r => (!Number.isFinite(r.venta_prom) || r.venta_prom===0) && Number.isFinite(r.inv_total) && r.inv_total>0).length;
+  const invSum = sum(rows, "inv_total");
+  const venSum = sum(rows, "venta_prom");
+  const cobertura = venSum>0 ? invSum/venSum : null;
+  const {rojo,naranja,amarillo,verde} = kpiBuckets(rows);
+  const exceso = rows.filter(r => Number.isFinite(r.dias_piso) && r.dias_piso>CFG.excesoDOS).length;
+
+  host.style.display = "block";
+  host.innerHTML = `
+    <h2 style="margin-bottom:12px">KPIs globales</h2>
+    <div class="kpi-grid">
+      <div class="kpi-card"><div class="kpi-title">SKUs activos</div><div class="kpi-value">${activos}</div><div class="kpi-sub">con venta &gt; 0</div></div>
+      <div class="kpi-card"><div class="kpi-title">Muertos</div><div class="kpi-value">${muertos}</div><div class="kpi-sub">inv &gt; 0 y venta = 0</div></div>
+      <div class="kpi-card"><div class="kpi-title">Cobertura promedio</div><div class="kpi-value">${fmtNum(cobertura)}</div><div class="kpi-sub">días ponderados</div></div>
+      <div class="kpi-card"><div class="kpi-title">Críticos por color</div><div class="kpi-value">🔴 ${rojo} · 🟠 ${naranja} · 🟡 ${amarillo} · 🟢 ${verde}</div><div class="kpi-sub">umbrales 1/3/5/5+</div></div>
+      <div class="kpi-card"><div class="kpi-title">Exceso</div><div class="kpi-value">${exceso}</div><div class="kpi-sub">&gt; ${CFG.excesoDOS} días</div></div>
+    </div>
+  `;
+}
+
+// --- Render principal (tablas por línea + Acción hoy) ---
 function renderTables(dataset, mostrarCatalogoCompleto=false) {
   const host = document.getElementById("tables");
   host.innerHTML = "";
+
+  // KPIs globales primero
+  renderKPIs(dataset.rows);
 
   const byLineaData = new Map();
   for (const r of dataset.rows) {
@@ -318,24 +313,45 @@ function renderTables(dataset, mostrarCatalogoCompleto=false) {
     const rows = mostrarCatalogoCompleto ? [...presentes, ...faltantes] : presentes;
     if (!rows.length) continue;
 
+    // Enriquecer con fecha de quiebre y sugerido
+    const enriched = rows.map(r => {
+      const dos = Number.isFinite(r.dias_piso) ? r.dias_piso :
+                  (Number.isFinite(r.inv_total) && Number.isFinite(r.venta_prom) && r.venta_prom>0 ? r.inv_total/r.venta_prom : null);
+      const fq = fechaQuiebre(dos);
+      const sug = qtyReorden(r.inv_total, r.venta_prom, CFG.targetDOS);
+      return { ...r, dias_calc: dos, fecha_quiebre: fq, sugerido: sug };
+    });
+
     const card = document.createElement("div");
     card.className = "card linea";
 
     const h = document.createElement("h2");
-    const chip = `<span class="chip"></span>`;
+    const chip = `<span class="chip">${enriched.length} productos</span>`;
     h.innerHTML = `${linea} ${chip}`;
     card.appendChild(h);
 
+    // Leyenda de colores
+    const legend = document.createElement("div");
+    legend.className = "legend";
+    legend.innerHTML = `
+      <span>Semáforo días de piso:</span>
+      <span class="dot" style="background:var(--kpi-red)"></span><span>≤ ${KPI_DIAS.rojo}</span>
+      <span class="dot" style="background:var(--kpi-orange)"></span><span>≤ ${KPI_DIAS.naranja}</span>
+      <span class="dot" style="background:var(--kpi-yellow)"></span><span>≤ ${KPI_DIAS.amarillo}</span>
+      <span class="dot" style="background:var(--kpi-green)"></span><span>&gt; ${KPI_DIAS.amarillo}</span>
+    `;
+    card.appendChild(legend);
+
     const tbl = document.createElement("table");
-    const theadTopOffset = 80;
     tbl.innerHTML = `
-      <thead style="top:${theadTopOffset}px">
+      <thead>
         <tr>
           <th>Código</th>
           <th>Producto</th>
           <th class="right">Inv. Total</th>
           <th class="right">Venta prom</th>
           <th class="right">Días de piso</th>
+          <th class="right">Fecha de quiebre</th>
           <th>Observaciones</th>
         </tr>
       </thead>
@@ -347,13 +363,14 @@ function renderTables(dataset, mostrarCatalogoCompleto=false) {
           <td class="right" id="sumInv"></td>
           <td class="right" id="avgVen"></td>
           <td class="right" id="avgDias"></td>
+          <td class="right" id="nextOut"></td>
           <td></td>
         </tr>
       </tfoot>
     `;
     const tbody = tbl.querySelector("tbody");
 
-    for (const r of rows) {
+    for (const r of enriched) {
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${r.codigo}</td>
@@ -361,23 +378,142 @@ function renderTables(dataset, mostrarCatalogoCompleto=false) {
         <td class="right">${fmtNum(r.inv_total)}</td>
         <td class="right">${fmtNum(r.venta_prom)}</td>
         <td class="right">${chipDias(r.dias_piso)}</td>
+        <td class="right">${fmtDate(r.fecha_quiebre)}</td>
         <td class="obs"><textarea data-code="${r.codigo}" rows="1" placeholder="Notas..."></textarea></td>
       `;
       tbody.appendChild(tr);
       const ta = tr.querySelector("textarea");
-      // después de crear el <textarea>:
-      ta.setAttribute("maxlength", "220");   // límite de caracteres
-      ta.style.maxWidth = "520px";           // (opcional) límite visual en pantallas anchas
-
+      ta.setAttribute("maxlength","220");
+      ta.style.maxWidth = "520px";
       ta.value = getObs(r.codigo);
       ta.addEventListener("input", (e) => setObs(r.codigo, e.target.value));
     }
 
-    tbl.querySelector("#sumInv").textContent = fmtNum(sum(presentes, "inv_total"));
-    tbl.querySelector("#avgVen").textContent = fmtNum(avg(presentes, "venta_prom"));
-    tbl.querySelector("#avgDias").textContent = fmtNum(avg(presentes, "dias_piso"));
+    const presentesSolo = enriched.filter(r => r.inv_total!=null || r.venta_prom!=null || r.dias_piso!=null);
+    tbl.querySelector("#sumInv").textContent = fmtNum(sum(presentesSolo, "inv_total"));
+    tbl.querySelector("#avgVen").textContent = fmtNum(avg(presentesSolo, "venta_prom"));
+    tbl.querySelector("#avgDias").textContent = fmtNum(avg(presentesSolo, "dias_piso"));
+
+    // Fecha de quiebre más próxima (entre presentes)
+    const proximas = presentesSolo.map(r => r.fecha_quiebre).filter(Boolean).sort((a,b)=>a-b);
+    tbl.querySelector("#nextOut").textContent = fmtDate(proximas[0] || null);
 
     card.appendChild(tbl);
+
+    // === ACCIÓN HOY (debajo de cada tabla) ===
+    const panel = document.createElement("div");
+    panel.className = "todo";
+    panel.innerHTML = `<h3>Acción hoy — ${linea}</h3>`;
+
+    // helpers bonitos
+    const toK = (n)=> Number.isFinite(n) ? n.toLocaleString('es-MX') : "–";
+    const mkItem = (prod, extraLeft, extraRightHTML="") => {
+      const div = document.createElement("div");
+      div.className = "todo-item";
+      div.innerHTML = `
+        <span class="badge prod">${prod}</span>
+        <span class="spacer"></span>
+        ${extraLeft}
+        ${extraRightHTML}
+      `;
+      return div;
+    };
+
+    // Tooltips de secciones
+    const tipReab = `
+      <div class="hint">?
+        <div class="tip">
+          <b>Reabastecer:</b> SKUs por debajo del objetivo de cobertura (<b>targetDOS = ${CFG.targetDOS} días</b>).<br/>
+          Cantidad sugerida: <code>sugerido = max(0, targetDOS × venta_prom − inv_total)</code>.
+        </div>
+      </div>`;
+    const tipRevis = `
+      <div class="hint">?
+        <div class="tip">
+          <b>Revisar:</b> SKUs críticos por baja cobertura (colores rojo/naranja, es decir <b>días de piso ≤ ${KPI_DIAS.naranja}</b>) y con <b>venta &gt; 0</b>.<br/>
+          En paréntesis se muestran los días de piso actuales.
+        </div>
+      </div>`;
+    const tipTrans = `
+      <div class="hint">?
+        <div class="tip">
+          <b>Traspaso:</b> SKUs muertos (hay inventario pero <b>venta_prom = 0</b>).<br/>
+          En paréntesis se muestran las piezas que podrían moverse/traspasarse.
+        </div>
+      </div>`;
+
+    // 1) Reabastecer (top 6 por sugerido)
+    const reab = enriched
+      .map(r => ({...r, sugerido: qtyReorden(r.inv_total, r.venta_prom)}))
+      .filter(r => r.sugerido>0)
+      .sort((a,b)=> b.sugerido - a.sugerido)
+      .slice(0,6);
+
+    const s1 = document.createElement("div");
+    s1.className = "todo-section";
+    s1.innerHTML = `<div class="todo-title">🔧 Reabastecer ${tipReab}</div>`;
+    const l1 = document.createElement("div"); l1.className = "todo-list";
+    if (reab.length) {
+      for (const r of reab) {
+        const left = `<span class="badge qty">${toK(r.sugerido)} pzas</span>`;
+        const right = `<span class="badge dos">${chipDias(r.dias_piso)}</span>`;
+        l1.appendChild(mkItem(r.producto, left, right));
+      }
+    } else {
+      const p = document.createElement("div"); p.className="small"; p.textContent="Sin reabastecimientos urgentes.";
+      s1.appendChild(p);
+    }
+    s1.appendChild(l1);
+    panel.appendChild(s1);
+
+    // 2) Revisar (críticos con venta > 0, por menor DOS)
+    const revis = enriched
+      .filter(r => Number.isFinite(r.venta_prom) && r.venta_prom>0 &&
+                   Number.isFinite(r.dias_piso) && (r.dias_piso<=KPI_DIAS.naranja))
+      .sort((a,b)=> (a.dias_piso||Infinity) - (b.dias_piso||Infinity))
+      .slice(0,6);
+
+    const s2 = document.createElement("div");
+    s2.className = "todo-section";
+    s2.innerHTML = `<div class="todo-title">⚠️ Revisar ${tipRevis}</div>`;
+    const l2 = document.createElement("div"); l2.className = "todo-list";
+    if (revis.length) {
+      for (const r of revis) {
+        const left = `<span class="badge">Días Piso ${fmtNum(r.dias_piso)} d</span>`;
+        const right = `<span class="badge dos">${chipDias(r.dias_piso)}</span>`;
+        l2.appendChild(mkItem(r.producto, left, right));
+      }
+    } else {
+      const p = document.createElement("div"); p.className="small"; p.textContent="Sin críticos (rojo/naranja).";
+      s2.appendChild(p);
+    }
+    s2.appendChild(l2);
+    panel.appendChild(s2);
+
+    // 3) Traspaso (muertos)
+    const trans = enriched
+      .filter(r => (r.inv_total||0) > 0 && (!Number.isFinite(r.venta_prom) || r.venta_prom===0))
+      .sort((a,b)=> (b.inv_total||0) - (a.inv_total||0))
+      .slice(0,6);
+
+    const s3 = document.createElement("div");
+    s3.className = "todo-section";
+    s3.innerHTML = `<div class="todo-title">🚚 Traspaso ${tipTrans}</div>`;
+    const l3 = document.createElement("div"); l3.className = "todo-list";
+    if (trans.length) {
+      for (const r of trans) {
+        const left = `<span class="badge qty">${toK(r.inv_total)} pzas</span>`;
+        l3.appendChild(mkItem(r.producto, left));
+      }
+    } else {
+      const p = document.createElement("div"); p.className="small"; p.textContent="Sin candidatos a traspaso.";
+      s3.appendChild(p);
+    }
+    s3.appendChild(l3);
+    panel.appendChild(s3);
+
+    card.appendChild(panel);
+
     host.appendChild(card);
   }
 
@@ -386,6 +522,21 @@ function renderTables(dataset, mostrarCatalogoCompleto=false) {
     p.className = "card";
     p.innerHTML = `<div class="empty">Carga un Excel para ver datos.</div>`;
     host.appendChild(p);
+  }
+}
+
+// --- Post-proceso / badge ---
+function afterParseAndRender(raw, norm) {
+  const dataset = { meta: { fileName: raw.fileName, sheetName: raw.sheetName }, rows: norm };
+  saveDataset(dataset.meta, dataset.rows);
+  renderTables(dataset, document.getElementById("toggleCatalogo").checked);
+
+  const meta = document.getElementById("fileMeta");
+  const diccCount = DICC.byCode?.size ?? 0;
+  meta.textContent = `Dicc: ${diccCount} entradas | Filas Excel: ${dataset.rows.length}`;
+
+  if (!dataset.rows.length) {
+    alert("No se detectaron filas de datos. Revisa que la hoja tenga encabezados con 'Código' y 'Producto'.");
   }
 }
 
@@ -426,6 +577,7 @@ function renderTables(dataset, mostrarCatalogoCompleto=false) {
   clearData.addEventListener("click", () => {
     localStorage.removeItem(LS_KEY_DATA);
     document.getElementById("tables").innerHTML = "";
+    document.getElementById("kpis").style.display = "none";
     fileMeta.textContent = "";
   });
 
