@@ -1,7 +1,7 @@
 // --- Config ---
 const LS_KEY_DATA = "pt_inv_dataset_v1";
 const LS_KEY_OBS_PREFIX = "pt_obs:"; // obs por código
-const DICC_URL = "assets/diccionario.csv";
+const DICC_URL = "assets/diccionario.enc";
 
 // === KPI: Umbrales de DÍAS DE PISO (tus nuevos valores) ===
 const KPI_DIAS = Object.freeze({ rojo:1, naranja:3, amarillo:5 }); // verde: >5
@@ -11,6 +11,22 @@ const CFG = Object.freeze({
   targetDOS: 5,     // cobertura objetivo (días)
   excesoDOS: 10     // exceso si pasa de este umbral
 });
+
+// --- Decode XOR + Base64 usando keyB1 (string) ---
+function decodeB64XorWithKey(b64, keyStr) {
+  if (!keyStr) {
+    throw new Error("No hay clave para diccionario (B1).");
+  }
+  const clean = b64.replace(/\s+/g, "");
+  const bin = atob(clean);
+  const out = new Uint8Array(bin.length);
+  const klen = keyStr.length;
+  for (let i = 0; i < bin.length; i++) {
+    out[i] = bin.charCodeAt(i) ^ keyStr.charCodeAt(i % klen);
+  }
+  return new TextDecoder().decode(out);
+}
+
 
 const fmtNum = (x) =>
   (x == null || Number.isNaN(x)) ? "–" :
@@ -85,12 +101,19 @@ function toNum(v) {
 
 // --- Diccionario (linea,codigo,producto) ---
 let DICC = { byCode: new Map(), byLinea: new Map() };
-async function loadDiccionario() {
+
+// Carga diccionario.enc y lo descifra con la clave proveniente del Excel (B1)
+async function loadDiccionarioWithKey(keyB1) {
+  const res = await fetch(DICC_URL, { cache: "no-cache" });
+  if (!res.ok) throw new Error("No pude descargar diccionario.enc");
+  const b64 = await res.text();
+  const csvText = decodeB64XorWithKey(b64, keyB1);
+
   return new Promise((resolve, reject) => {
-    Papa.parse(DICC_URL, {
-      download: true, delimiter: ",", header: true, encoding: "UTF-8",
-      complete: (res) => {
-        const rows = res.data.filter(r => r.linea && r.codigo && r.producto);
+    Papa.parse(csvText, {
+      header: true,
+      complete: ({data}) => {
+        const rows = data.filter(r => r.linea && r.codigo && r.producto);
         DICC.byCode = new Map(); DICC.byLinea = new Map();
         for (const r of rows) {
           const linea = r.linea.trim();
@@ -103,17 +126,14 @@ async function loadDiccionario() {
         for (const [L, arr] of DICC.byLinea.entries()) {
           arr.sort((a,b) => (parseInt(a.codigo)||0) - (parseInt(b.codigo)||0));
         }
-        const meta = document.getElementById("fileMeta");
-        meta.textContent = `Dicc: ${DICC.byCode.size} entradas`;
         resolve();
       },
-      error: (err) => {
-        document.getElementById("fileMeta").textContent = "⚠ No se pudo cargar el diccionario.csv";
-        reject(err);
-      }
+      error: reject
     });
   });
 }
+
+
 
 // --- XLSX → objetos ---
 async function parseXlsx(file) {
@@ -123,7 +143,10 @@ async function parseXlsx(file) {
   const firstSheet = wb.SheetNames[0];
   const sheet = wb.Sheets[firstSheet];
 
+  // Lee toda la hoja a 2D para detección de encabezados y para buscar B1 flexible
   const rows2D = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+  // --- detectar encabezados como ya lo hacías ---
   const norm = (s) => String(s || "")
     .toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu,"")
     .replace(/\s+/g," ").trim();
@@ -153,8 +176,39 @@ async function parseXlsx(file) {
       break;
     }
   }
-  if (headerRowIdx === -1) return { rows: [], sheetName: firstSheet, fileName: file.name };
 
+  // === CLAVE ROBUSTA ===
+  // 1) Si la fila 0 tiene algo en Col B (index 1), úsalo (B1 real)
+  // 2) Si detectamos encabezado en otra fila, toma Col B de ESA fila
+  // 3) Si todavía no, busca la primera celda NO vacía en Col B dentro de las primeras 10 filas
+  // 4) Fallback: si existe sheet["B1"].v úsalo
+  let keyB1 = "";
+  if (rows2D[0] && rows2D[0][1] !== undefined && String(rows2D[0][1]).trim() !== "") {
+    keyB1 = String(rows2D[0][1]).trim();
+  } else if (headerRowIdx >= 0 && rows2D[headerRowIdx] && rows2D[headerRowIdx][1] !== undefined && String(rows2D[headerRowIdx][1]).trim() !== "") {
+    keyB1 = String(rows2D[headerRowIdx][1]).trim();
+  } else {
+    for (let r = 0; r < Math.min(rows2D.length, 10); r++) {
+      if (rows2D[r] && rows2D[r][1] !== undefined && String(rows2D[r][1]).trim() !== "") {
+        keyB1 = String(rows2D[r][1]).trim();
+        break;
+      }
+    }
+    if (!keyB1 && sheet["B1"] && sheet["B1"].v != null) {
+      keyB1 = String(sheet["B1"].v).trim();
+    }
+  }
+
+  if (!keyB1) {
+    throw new Error("No se encontró clave en columna B (B1 o fila de encabezados).");
+  }
+
+  // --- si no hay encabezados, cortamos igual (pero devolvemos meta con keyB1) ---
+  if (headerRowIdx === -1) {
+    return { rows: [], sheetName: firstSheet, fileName: file.name, keyB1 };
+  }
+
+  // --- construir dataRows como ya lo hacías ---
   const dataRows = [];
   for (let r = headerRowIdx + 1; r < rows2D.length; r++) {
     const row = rows2D[r];
@@ -169,7 +223,8 @@ async function parseXlsx(file) {
     if (headerMap["concepto"] !== undefined) obj["concepto"]  = row[headerMap["concepto"]] ?? "";
     dataRows.push(obj);
   }
-  return { rows: dataRows, sheetName: firstSheet, fileName: file.name };
+
+  return { rows: dataRows, sheetName: firstSheet, fileName: file.name, keyB1 };
 }
 
 // --- Normalización: SOLO códigos presentes en el diccionario ---
@@ -217,8 +272,10 @@ function normalizeRows(rows) {
 
 // --- Persistencia ---
 function saveDataset(meta, rows) {
+  // meta puede traer keyB1 si venía de parseXlsx
   localStorage.setItem(LS_KEY_DATA, JSON.stringify({ meta, rows, savedAt: new Date().toISOString() }));
 }
+
 function loadDataset() {
   const raw = localStorage.getItem(LS_KEY_DATA);
   if (!raw) return null; try { return JSON.parse(raw); } catch { return null; }
@@ -541,8 +598,10 @@ function afterParseAndRender(raw, norm) {
 }
 
 // --- Boot ---
+
 (async function () {
-  await loadDiccionario();
+  // 1) NO cargues el diccionario aquí sin clave
+  // await loadDiccionarioWithKey();  // <-- ELIMINAR
 
   const file = document.getElementById("file");
   const fileMeta = document.getElementById("fileMeta");
@@ -550,10 +609,19 @@ function afterParseAndRender(raw, norm) {
   const clearObs = document.getElementById("clearObs");
   const toggleCatalogo = document.getElementById("toggleCatalogo");
 
+  // 2) Si hay dataset guardado, primero carga el diccionario con la key guardada
   const prev = loadDataset();
   if (prev?.rows?.length) {
-    renderTables(prev, toggleCatalogo.checked);
-    fileMeta.textContent = `Cargando de memoria: ${prev.meta?.fileName || "dataset"} — hoja: ${prev.meta?.sheetName || "única"}`;
+    try {
+      if (!prev.meta?.keyB1) throw new Error("No hay keyB1 guardada. Sube un Excel una vez.");
+      await loadDiccionarioWithKey(prev.meta.keyB1);
+      renderTables(prev, toggleCatalogo.checked);
+      fileMeta.textContent =
+        `Cargando de memoria: ${prev.meta?.fileName || "dataset"} — hoja: ${prev.meta?.sheetName || "única"}`;
+    } catch (e) {
+      console.warn(e.message);
+      fileMeta.textContent = "Sube un Excel para leer clave B y el diccionario.";
+    }
   }
 
   toggleCatalogo.addEventListener("change", () => {
@@ -561,16 +629,21 @@ function afterParseAndRender(raw, norm) {
     if (d?.rows?.length) renderTables(d, toggleCatalogo.checked);
   });
 
+  // Al subir archivo:
   file.addEventListener("change", async (e) => {
     const f = e.target.files?.[0];
     if (!f) return;
     try {
-      const raw = await parseXlsx(f);
+      const raw = await parseXlsx(f);              // trae raw.keyB1 (clave)
+      await loadDiccionarioWithKey(raw.keyB1);     // descifra diccionario con esa clave
       const norm = normalizeRows(raw.rows);
-      afterParseAndRender(raw, norm);
+      const meta = { fileName: raw.fileName, sheetName: raw.sheetName, keyB1: raw.keyB1 };
+      saveDataset(meta, norm);
+      renderTables({ meta, rows: norm }, toggleCatalogo.checked);
+      fileMeta.textContent = `Dicc: ${DICC.byCode.size} entradas | Filas Excel: ${norm.length}`;
     } catch (err) {
       console.error(err);
-      alert("No pude leer la hoja: " + err.message);
+      alert("Error al preparar datos: " + err.message);
     }
   });
 
