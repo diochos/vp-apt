@@ -5,41 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Inventario PT — Tablas por Línea</title>
 
-  <!-- Sólo PapaParse aquí. XLSX se cargará dinámicamente desde app.js -->
+  <!-- PapaParse; XLSX se carga dinámicamente desde app.js -->
   <script defer src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-  <script>window.DEBUG = true;</script>
-  
-</head>
-<body>
-  <header>
-  <div class="inner">
-    <h1>Inventario de Producto Terminado — Tablas por Línea</h1>
-    <span class="pill" id="fileMeta"></span>
-  </div>
-</header>
-
-
-  <div class="wrap">
-    <div id="errBox" class="err" style="display:none"></div>
-
-    <div class="card">
-      <div class="toolbar">
-        <input id="file" type="file" accept=".xlsx,.xls" />
-        <label class="switch"><input type="checkbox" id="toggleCatalogo"/> Mostrar catálogo completo (incluye no presentes en Excel)</label>
-        <button id="clearData" class="ghost">Borrar dataset guardado</button>
-        <button id="clearObs" class="ghost">Borrar Observaciones</button>
-        <span class="pill">El Excel debe tener 1 sola hoja. Se guarda en el navegador hasta que lo reemplaces.</span>
-      </div>
-    </div>
-
-    <div id="tables"></div>
-  </div>
-
-  <!-- Tu app -->
-  <script defer src="./assets/app.js"></script>
 
   <style>
-
   @font-face {
     font-family: 'Montserrat';
     src: url('./fonts/Montserrat-Medium.ttf') format('truetype');
@@ -48,30 +17,17 @@
   }
 
   :root{
-    /* Bepensa */
-    --brand:#ff6a00;            /* naranja */
-    --brand-dark:#cc5500;
-    --accent:#004b8d;           /* azul corporativo */
-    /* UI base */
-    --bg:#0d1117;
-    --card:#131923;
-    --card-2:#0f151f;
-    --text:#eef2f7;
-    --muted:#9aa4b2;
-    --line:#243042;
+    --brand:#ff6a00; --brand-dark:#cc5500; --accent:#004b8d;
+    --bg:#0d1117; --card:#131923; --card-2:#0f151f;
+    --text:#eef2f7; --muted:#9aa4b2; --line:#243042;
     --shadow: 0 6px 24px rgba(0,0,0,.25);
-    /* Semáforo DÍAS DE PISO (solo colores; umbrales van en app.js) */
-    --kpi-red:#ef4444;
-    --kpi-orange:#f59e0b;
-    --kpi-yellow:#facc15;
-    --kpi-green:#22c55e;
+    --kpi-red:#ef4444; --kpi-orange:#f59e0b; --kpi-yellow:#facc15; --kpi-green:#22c55e;
   }
 
   *{box-sizing:border-box}
   html,body{height:100%}
   body{
-    margin:0;
-    font-family: 'Montserrat', system-ui, sans-serif;
+    margin:0; font-family: 'Montserrat', system-ui, sans-serif;
     background:
       radial-gradient(1200px 600px at 10% -10%, rgba(255,106,0,.08), transparent 60%),
       radial-gradient(1000px 600px at 110% 0%, rgba(0,75,141,.10), transparent 60%),
@@ -80,10 +36,8 @@
   }
 
   header{
-    position:static; top:0; z-index:10;
-    padding:14px 0;
+    position:static; padding:14px 0;
     background:linear-gradient(90deg, rgba(0,75,141,.85), rgba(255,106,0,.85));
-    backdrop-filter: blur(6px);
     border-bottom:1px solid rgba(255,255,255,.08);
     box-shadow: 0 2px 10px rgba(0,0,0,.25);
   }
@@ -95,58 +49,45 @@
 
   .card{
     background:linear-gradient(180deg, var(--card), var(--card-2));
-    border:1px solid var(--line);
-    border-radius:16px;
-    padding:16px;
-    margin:16px 0;
-    box-shadow:var(--shadow);
+    border:1px solid var(--line); border-radius:16px;
+    padding:16px; margin:16px 0; box-shadow:var(--shadow);
   }
 
   .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
   input[type=file]{color:var(--muted)}
   button{
-    background:var(--brand);
-    color:#1a1a1a;
-    border:0;border-radius:10px;
-    padding:8px 12px;font-weight:700;cursor:pointer
+    background:var(--brand); color:#1a1a1a; border:0; border-radius:10px;
+    padding:8px 12px; font-weight:700; cursor:pointer
   }
   button:hover{filter:brightness(.95)}
   button.ghost{background:transparent;border:1px solid #2b3647;color:var(--text)}
   label.switch{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
 
   h2{
-    margin:0 0 10px;
-    font-size:18px;font-weight:800;
-    display:flex;align-items:center;gap:8px
+    margin:0 0 10px; font-size:18px; font-weight:800;
+    display:flex; align-items:center; gap:8px
   }
   h2 .chip{
-    display:inline-flex;align-items:center;gap:6px;
-    font-size:12px;font-weight:700;color:#0e1116;
+    display:inline-flex; align-items:center; gap:6px;
+    font-size:12px; font-weight:700; color:#0e1116;
     background: linear-gradient(90deg, #ffe1cc, #cfe4ff);
-    border:1px solid #2b3647;border-radius:999px;
-    padding:2px 10px;
+    border:1px solid #2b3647; border-radius:999px; padding:2px 10px;
   }
 
   table{width:100%;border-collapse:separate;border-spacing:0}
   thead th{
-    position:sticky; top:78px; /* ajusta si cambia el header */
+    position:static;
     background:linear-gradient(180deg, #162030, #121a28);
-    color:#d6dee9; font-weight:700;
-    text-align:left; padding:10px 10px;
-    border-bottom:1px solid #2b3647;
+    color:#d6dee9; font-weight:700; text-align:left;
+    padding:10px 10px; border-bottom:1px solid #2b3647;
   }
-  tbody td{
-    padding:10px;border-bottom:1px dotted #213048; vertical-align:middle;
-  }
+  tbody td{padding:10px;border-bottom:1px dotted #213048; vertical-align:middle;}
   tbody tr:hover{background:rgba(255,106,0,.06)}
   td.right{text-align:right}
 
-  .legend{
-    display:flex;gap:10px;align-items:center;margin-bottom:8px;color:var(--muted);font-size:12px
-  }
+  .legend{display:flex;gap:10px;align-items:center;margin-bottom:8px;color:var(--muted);font-size:12px}
   .legend .dot{width:12px;height:12px;border-radius:3px;border:1px solid #0003}
 
-  /* Chips de KPI */
   .kpi{display:inline-block;min-width:46px;text-align:center;font-weight:800;border-radius:10px;padding:4px 8px}
   .kpi.na{opacity:.55}
   .kpi.bad{color:#160404;background:linear-gradient(180deg, #ffb4b4, var(--kpi-red))}
@@ -154,7 +95,6 @@
   .kpi.mid{color:#161300;background:linear-gradient(180deg, #fff2a6, var(--kpi-yellow))}
   .kpi.ok{ color:#031407;background:linear-gradient(180deg, #c8ffd8, var(--kpi-green))}
 
-  /* Observaciones */
   td.obs textarea{
     width:100%; min-height:34px; max-height:96px; resize:vertical;
     border:1px solid #2b3647; border-radius:10px; background:#0c1320; color:var(--text);
@@ -166,12 +106,93 @@
   tfoot td{padding:12px 10px;border-top:1px solid #2b3647;color:#cbd5e1}
   .empty{color:var(--muted);font-style:italic;padding:10px 0}
   .err{background:#2a1111;border:1px solid #522;color:#fca5a5;padding:10px;border-radius:10px;margin:10px 0;font-size:13px}
-</style>
+
+  /* KPIs globales */
+  .kpi-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
+  .kpi-card{background:#0f151f;border:1px solid #223046;border-radius:12px;padding:12px}
+  .kpi-title{font-size:12px;color:#aab4c2;margin:0 0 4px}
+  .kpi-value{font-size:18px;font-weight:800}
+  .kpi-sub{font-size:11px;color:#94a3b8}
+  @media (max-width:900px){.kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+  /* Acción hoy */
+  .todo {
+    background:#101826; border:1px solid #223046; border-radius:12px; padding:12px;
+  }
+  .todo h3 { margin:0 0 10px; font-size:16px; display:flex; align-items:center; gap:8px; }
+  .todo-section { margin:8px 0; }
+  .todo-title { font-weight:800; margin-bottom:6px; display:flex; align-items:center; gap:8px; }
+
+  .todo-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px 14px; }
+  @media (max-width:900px){ .todo-list{ grid-template-columns:1fr; } }
+
+  .todo-item {
+    display:flex; align-items:center; gap:8px;
+    padding:6px 8px; border:1px dashed #253449; border-radius:10px;
+    background:linear-gradient(180deg, rgba(12,19,32,.4), rgba(12,19,32,.2));
+    justify-content:space-between;
+  }
+
+  .badge {
+    display:inline-flex; align-items:center; justify-content:center;
+    padding:2px 8px; border-radius:999px; font-size:12px; font-weight:800;
+    border:1px solid #2a3a50; background:#0c1320; color:#dbe7ff;
+  }
+  .badge.qty { border-color:#3a2a18; background:#1c140c; color:#ffd9a6; }
+  .badge.dos { padding:0; border:none; background:transparent; }
+  .badge.prod { font-weight:700; color:#e8eef9; background:#151e2c; border-color:#28384e; }
+  .small { font-size:12px; color:#9fb0c7; }
+
+  /* Tooltip (ícono ?) */
+  .hint {
+    position:relative; display:inline-flex; align-items:center; justify-content:center;
+    width:18px; height:18px; border-radius:50%;
+    background:#172133; color:#cfe1ff; font-weight:900; font-size:12px;
+    cursor:default; border:1px solid #29405f;
+  }
+  .hint .tip {
+    visibility:hidden; opacity:0; transition:opacity .15s ease;
+    position:absolute; left:50%; transform:translateX(-50%);
+    bottom:150%; min-width:260px; max-width:360px;
+    background:#0e1523; color:#d5e1f5; border:1px solid #2b3c55;
+    padding:10px; border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.35);
+    font-size:12px; line-height:1.35; z-index:20;
+    text-align:left;
+  }
+  .hint:hover .tip{ visibility:visible; opacity:1; }
+  .tip b{ color:#fff; }
+  </style>
+</head>
+<body>
+<header>
+  <div class="inner">
+    <h1>Inventario de Producto Terminado — Tablas por Línea</h1>
+    <span class="pill" id="fileMeta"></span>
+  </div>
+</header>
+
+<div class="wrap">
 
 
 
+  <div id="errBox" class="err" style="display:none"></div>
 
+  <div class="card">
+    <div class="toolbar">
+      <input id="file" type="file" accept=".xlsx,.xls" />
+      <label class="switch"><input type="checkbox" id="toggleCatalogo"/> Mostrar catálogo completo (incluye no presentes en Excel)</label>
+      <button id="clearData" class="ghost">Borrar dataset guardado</button>
+      <button id="clearObs" class="ghost">Borrar Observaciones</button>
+      <span class="pill">El Excel debe tener 1 sola hoja. Se guarda en el navegador hasta que lo reemplaces.</span>
+    </div>
+  </div>
+    <!-- KPIs globales -->
+  <div id="kpis" class="card" style="display:none"></div>
 
+  <div id="tables"></div>
+</div>
 
+<!-- App -->
+<script defer src="./assets/app.js"></script>
 </body>
 </html>
